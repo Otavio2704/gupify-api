@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_DB: gupify_test
+          POSTGRES_USER: gupify_user
+          POSTGRES_PASSWORD: senha_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Build e testes
+        run: mvn clean verify
+        env:
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_NAME: gupify_test
+          DB_USER: gupify_user
+          DB_PASSWORD: senha_test
+          NVIDIA_API_KEY: dummy_key_for_tests
+          SESSION_COOKIE_MAX_AGE_DAYS: 90
+          SESSION_EXPIRY_DAYS: 180
+          CORS_ALLOWED_ORIGIN: http://localhost:3000
+          SERVER_PORT: 8080

@@ -1,0 +1,42 @@
+version: '3.9'
+
+services:
+  postgres:
+    image: postgres:15
+    container_name: gupify-postgres
+    environment:
+      POSTGRES_DB: gupify
+      POSTGRES_USER: gupify_user
+      POSTGRES_PASSWORD: senha_segura
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gupify_user -d gupify"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: .
+    container_name: gupify-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: gupify
+      DB_USER: gupify_user
+      DB_PASSWORD: senha_segura
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY}
+      CORS_ALLOWED_ORIGIN: http://localhost:3000
+      SERVER_PORT: 8080
+      SESSION_COOKIE_MAX_AGE_DAYS: 90
+      SESSION_EXPIRY_DAYS: 180
+    ports:
+      - "8080:8080"
+
+volumes:
+  postgres_data:
