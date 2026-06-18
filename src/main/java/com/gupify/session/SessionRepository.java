@@ -10,4 +10,6 @@ import java.util.UUID;
 public interface SessionRepository extends JpaRepository<Session, UUID> {
 
     void deleteByLastSeenAtBefore(LocalDateTime threshold);
+
+    long countByLastSeenAtBefore(LocalDateTime threshold);
 }

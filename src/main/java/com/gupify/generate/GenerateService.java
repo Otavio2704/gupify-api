@@ -2,6 +2,7 @@ package com.gupify.generate;
 
 import com.gupify.cv.CvService;
 import com.gupify.exception.ResourceNotFoundException;
+import com.gupify.exception.SessionRateLimitException;
 import com.gupify.report.Report;
 import com.gupify.report.ReportRepository;
 import lombok.RequiredArgsConstructor;
@@ -26,19 +27,12 @@ public class GenerateService {
     @Value("${gupify.rate-limit.generations-per-hour:10}")
     private int generationsPerHour;
 
-    /**
-     * Fluxo principal de geração.
-     * Verifica cache antes de chamar a IA.
-     */
     @Transactional
     public GenerateResponseDto generate(GenerateRequest request, UUID sessionId) {
-        // Valida que o CV pertence à sessão (lança AccessDeniedException se não)
         String cvText = cvService.getRawText(request.cvId(), sessionId);
 
-        // Verifica rate limit por sessão
         checkSessionRateLimit(sessionId);
 
-        // Verifica cache: mesmo cv_id + job_description_id já tem relatório?
         if (request.jobDescriptionId() != null) {
             Optional<Report> cached = reportRepository
                     .findByCvIdAndJobDescriptionIdAndSessionId(
@@ -52,14 +46,11 @@ public class GenerateService {
             }
         }
 
-        // Determina o texto da vaga
-        String jobText = resolveJobText(request, sessionId);
+        String jobText = resolveJobText(request);
 
-        // Chama a IA
         log.debug("Chamando NvidiaAiService para sessionId={}", sessionId);
         AiResult result = nvidiaAiService.generate(cvText, jobText);
 
-        // Persiste o relatório
         Report report = buildReport(request, sessionId, result);
         Report saved = reportRepository.save(report);
         log.info("Relatório gerado e salvo. id={}, sessionId={}", saved.getId(), sessionId);
@@ -67,9 +58,6 @@ public class GenerateService {
         return toResponseDto(saved, false);
     }
 
-    /**
-     * Regenera o resumo para um relatório existente, incrementando summary_version.
-     */
     @Transactional
     public GenerateResponseDto regenerate(UUID reportId, UUID sessionId) {
         Report report = reportRepository.findByIdAndSessionId(reportId, sessionId)
@@ -79,6 +67,10 @@ public class GenerateService {
 
         String cvText = cvService.getRawText(report.getCvId(), sessionId);
         String jobText = report.getJobDescriptionContent();
+
+        if (jobText == null || jobText.isBlank()) {
+            throw new IllegalArgumentException("Conteúdo da vaga ausente no relatório. Não é possível regenerar.");
+        }
 
         log.debug("Regenerando relatório id={} para sessionId={}", reportId, sessionId);
         AiResult result = nvidiaAiService.generate(cvText, jobText);
@@ -95,7 +87,7 @@ public class GenerateService {
     }
 
     // =========================================================================
-    // Métodos privados
+    // Privado
     // =========================================================================
 
     private void checkSessionRateLimit(UUID sessionId) {
@@ -104,17 +96,28 @@ public class GenerateService {
 
         if (recentGenerations >= generationsPerHour) {
             log.warn("Rate limit por sessão atingido. sessionId={}, geracoes={}", sessionId, recentGenerations);
-            throw new com.gupify.exception.SessionRateLimitException(
+            throw new SessionRateLimitException(
                     "Limite de " + generationsPerHour + " gerações por hora atingido. Aguarde antes de tentar novamente."
             );
         }
     }
 
-    private String resolveJobText(GenerateRequest request, UUID sessionId) {
+    /**
+     * Resolve o texto da vaga a partir do request.
+     * Prioriza jobContent inline. Se ausente, lança exceção —
+     * o fluxo de jobDescriptionId persistido ainda não está implementado.
+     */
+    private String resolveJobText(GenerateRequest request) {
         if (request.jobContent() != null && !request.jobContent().isBlank()) {
-            return request.jobTitle() + "\n\n" + request.jobContent();
+            String title = (request.jobTitle() != null && !request.jobTitle().isBlank())
+                    ? request.jobTitle() + "\n\n"
+                    : "";
+            return title + request.jobContent();
         }
-        throw new IllegalArgumentException("Texto da vaga não informado");
+        // jobDescriptionId presente mas sem jobContent: módulo JobDescription não implementado ainda
+        throw new IllegalArgumentException(
+                "Texto da vaga não informado. O fluxo por jobDescriptionId ainda não está disponível."
+        );
     }
 
     private Report buildReport(GenerateRequest request, UUID sessionId, AiResult result) {

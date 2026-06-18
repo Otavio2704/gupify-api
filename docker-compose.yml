@@ -5,15 +5,15 @@ services:
     image: postgres:15
     container_name: gupify-postgres
     environment:
-      POSTGRES_DB: gupify
-      POSTGRES_USER: gupify_user
-      POSTGRES_PASSWORD: senha_segura
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U gupify_user -d gupify"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -27,11 +27,11 @@ services:
     environment:
       DB_HOST: postgres
       DB_PORT: 5432
-      DB_NAME: gupify
-      DB_USER: gupify_user
-      DB_PASSWORD: senha_segura
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
       NVIDIA_API_KEY: ${NVIDIA_API_KEY}
-      CORS_ALLOWED_ORIGIN: http://localhost:3000
+      CORS_ALLOWED_ORIGIN: ${CORS_ALLOWED_ORIGIN:-http://localhost:3000}
       SERVER_PORT: 8080
       SESSION_COOKIE_MAX_AGE_DAYS: 90
       SESSION_EXPIRY_DAYS: 180

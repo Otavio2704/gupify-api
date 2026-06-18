@@ -3,7 +3,6 @@ package com.gupify.session;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseCookie;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -29,9 +28,6 @@ public class SessionService {
     @Value("${session.expiry-days:180}")
     private int sessionExpiryDays;
 
-    /**
-     * Verifica se uma sessão existe e é válida no banco.
-     */
     @Transactional
     public Optional<Session> findAndRefresh(UUID sessionId) {
         return sessionRepository.findById(sessionId).map(session -> {
@@ -40,9 +36,6 @@ public class SessionService {
         });
     }
 
-    /**
-     * Cria uma nova sessão e retorna a entidade persistida.
-     */
     @Transactional
     public Session createSession() {
         Session session = new Session(UUID.randomUUID());
@@ -51,18 +44,12 @@ public class SessionService {
         return saved;
     }
 
-    /**
-     * Invalida (deleta) a sessão do banco.
-     */
     @Transactional
     public void invalidateSession(UUID sessionId) {
         sessionRepository.deleteById(sessionId);
         log.info("Sessão invalidada: {}", sessionId);
     }
 
-    /**
-     * Constrói o ResponseCookie HttpOnly com as configurações de segurança.
-     */
     public ResponseCookie buildCookie(UUID sessionId) {
         return ResponseCookie.from(COOKIE_NAME, sessionId.toString())
                 .httpOnly(true)
@@ -73,9 +60,6 @@ public class SessionService {
                 .build();
     }
 
-    /**
-     * Constrói cookie de expiração (para invalidar no browser).
-     */
     public ResponseCookie buildExpiredCookie() {
         return ResponseCookie.from(COOKIE_NAME, "")
                 .httpOnly(true)
@@ -86,14 +70,12 @@ public class SessionService {
                 .build();
     }
 
-    /**
-     * Job agendado para limpar sessões expiradas (executa às 03:00 todo dia).
-     */
     @Scheduled(cron = "0 0 3 * * *")
     @Transactional
     public void cleanExpiredSessions() {
         LocalDateTime threshold = LocalDateTime.now().minusDays(sessionExpiryDays);
-        log.info("Limpando sessões com last_seen_at anterior a {}", threshold);
+        long count = sessionRepository.countByLastSeenAtBefore(threshold);
         sessionRepository.deleteByLastSeenAtBefore(threshold);
+        log.info("Limpeza de sessões concluída. Removidas: {}, threshold: {}", count, threshold);
     }
 }

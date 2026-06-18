@@ -31,9 +31,6 @@ class NvidiaAiServiceTest {
     private ChatClient.ChatClientRequestSpec requestSpec;
 
     @Mock
-    private ChatClient.ChatClientRequestSpec.ChatClientPromptRequestSpec userSpec;
-
-    @Mock
     private ChatClient.CallResponseSpec callSpec;
 
     private NvidiaAiService nvidiaAiService;
@@ -65,7 +62,7 @@ class NvidiaAiServiceTest {
 
     @Test
     void generate_whenKeywordsNot3_shouldThrowAiResponseParseException() {
-        AiResult invalid = new AiResult("Resumo", List.of("Java", "Spring")); // só 2
+        AiResult invalid = new AiResult("Resumo", List.of("Java", "Spring"));
 
         when(chatClient.prompt()).thenReturn(requestSpec);
         when(requestSpec.user(any())).thenReturn(requestSpec);
@@ -99,5 +96,31 @@ class NvidiaAiServiceTest {
 
         AiResult result = nvidiaAiService.generate(longCv, "job");
         assertThat(result).isNotNull();
+    }
+
+    @Test
+    void generate_whenTimeoutOccurs_shouldPropagateException() {
+        when(chatClient.prompt()).thenReturn(requestSpec);
+        when(requestSpec.user(any())).thenReturn(requestSpec);
+        when(requestSpec.call()).thenReturn(callSpec);
+        when(callSpec.entity(AiResult.class))
+                .thenThrow(new RuntimeException("Read timeout"));
+
+        assertThrows(RuntimeException.class,
+                () -> nvidiaAiService.generate("cv", "job"));
+    }
+
+    @Test
+    void generate_whenApiThrowsException_shouldPropagateAndNotReturnResult() {
+        when(chatClient.prompt()).thenReturn(requestSpec);
+        when(requestSpec.user(any())).thenReturn(requestSpec);
+        when(requestSpec.call()).thenReturn(callSpec);
+        when(callSpec.entity(AiResult.class))
+                .thenThrow(new RuntimeException("Connection refused"));
+
+        assertThrows(RuntimeException.class,
+                () -> nvidiaAiService.generate("cv", "job"));
+
+        verify(callSpec).entity(AiResult.class);
     }
 }
