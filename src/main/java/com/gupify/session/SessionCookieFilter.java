@@ -10,9 +10,11 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
+import java.time.LocalDateTime;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
@@ -25,6 +27,7 @@ public class SessionCookieFilter extends OncePerRequestFilter {
     private final SessionRepository sessionRepository;
 
     @Override
+    @Transactional
     protected void doFilterInternal(HttpServletRequest request,
                                     HttpServletResponse response,
                                     FilterChain filterChain)
@@ -34,10 +37,12 @@ public class SessionCookieFilter extends OncePerRequestFilter {
 
         if (sessionIdOpt.isPresent()) {
             UUID sessionId = sessionIdOpt.get();
-            boolean exists = sessionRepository.existsById(sessionId);
 
-            if (exists) {
-                // Popula o SecurityContext com o session_id como principal
+            // Atualiza last_seen_at e verifica existência em uma única query.
+            // Se retornar 0 linhas afetadas, a sessão não existe no banco.
+            int updated = sessionRepository.updateLastSeenAt(sessionId, LocalDateTime.now());
+
+            if (updated > 0) {
                 var auth = new UsernamePasswordAuthenticationToken(
                         sessionId,
                         null,

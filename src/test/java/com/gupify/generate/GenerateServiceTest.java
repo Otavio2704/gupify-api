@@ -21,6 +21,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
@@ -64,7 +65,9 @@ class GenerateServiceTest {
         UUID sessionId = UUID.randomUUID();
         UUID cvId = UUID.randomUUID();
         UUID jobId = UUID.randomUUID();
-        GenerateRequest request = new GenerateRequest(cvId, jobId, null, null);
+
+        // jobDescriptionId + jobContent presentes: fluxo de cache válido
+        GenerateRequest request = new GenerateRequest(cvId, jobId, "Dev Backend", "Descrição da vaga");
 
         when(cvService.getRawText(cvId, sessionId)).thenReturn("texto cv");
         when(reportRepository.countBySessionIdAndCreatedAtAfter(eq(sessionId), any()))
@@ -83,6 +86,25 @@ class GenerateServiceTest {
 
         assertThat(response.fromCache()).isTrue();
         assertThat(response.summary()).isEqualTo("resumo cached");
+        verify(nvidiaAiService, never()).generate(any(), any());
+    }
+
+    @Test
+    void generate_whenJobDescriptionIdWithoutJobContent_shouldThrowIllegalArgumentException() {
+        UUID sessionId = UUID.randomUUID();
+        UUID cvId = UUID.randomUUID();
+        UUID jobId = UUID.randomUUID();
+
+        // jobDescriptionId presente, mas sem jobContent: fluxo não implementado
+        GenerateRequest request = new GenerateRequest(cvId, jobId, null, null);
+
+        when(cvService.getRawText(cvId, sessionId)).thenReturn("texto cv");
+        when(reportRepository.countBySessionIdAndCreatedAtAfter(eq(sessionId), any()))
+                .thenReturn(0L);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> generateService.generate(request, sessionId));
+
         verify(nvidiaAiService, never()).generate(any(), any());
     }
 

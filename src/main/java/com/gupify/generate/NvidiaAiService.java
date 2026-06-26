@@ -67,6 +67,7 @@ public class NvidiaAiService {
     private final ChatClient chatClient;
     private final Counter successCounter;
     private final Counter rateLimitCounter;
+    private final Counter retryExhaustedCounter;
     private final Timer requestTimer;
 
     @Value("${nvidia.api.cv-max-chars}")
@@ -85,7 +86,11 @@ public class NvidiaAiService {
                 .register(meterRegistry);
 
         this.rateLimitCounter = Counter.builder("gupify.generate.rate_limit")
-                .description("Total de eventos de rate limit")
+                .description("Total de eventos de rate limit externo (NVIDIA NIM)")
+                .register(meterRegistry);
+
+        this.retryExhaustedCounter = Counter.builder("gupify.generate.retry_exhausted")
+                .description("Total de falhas após esgotar todas as tentativas de retry")
                 .register(meterRegistry);
 
         this.requestTimer = Timer.builder("gupify.nvidia.request.duration")
@@ -126,19 +131,23 @@ public class NvidiaAiService {
         });
     }
 
+    // Fallback acionado quando o rate limiter do Resilience4j bloqueia a chamada
+    // (limite de 38 req/min atingido antes mesmo de chegar à NVIDIA)
     private AiResult rateLimitFallback(String cvText, String jobText, Exception ex) {
         rateLimitCounter.increment();
-        log.warn("Rate limit da NVIDIA NIM atingido: {}", ex.getMessage());
+        log.warn("Rate limit interno (Resilience4j) atingido: {}", ex.getMessage());
         throw new NvidiaRateLimitException(
                 "Serviço temporariamente sobrecarregado. Aguarde alguns segundos e tente novamente."
         );
     }
 
+    // Fallback acionado quando todas as tentativas de retry falharam
+    // (erros de rede, timeout ou 429 da própria NVIDIA após retries)
     private AiResult retryFallback(String cvText, String jobText, Exception ex) {
-        rateLimitCounter.increment();
-        log.warn("Todas as tentativas de retry falharam: {}", ex.getMessage());
+        retryExhaustedCounter.increment();
+        log.warn("Todas as tentativas de retry falharam para a NVIDIA NIM. Causa: {}", ex.getMessage());
         throw new NvidiaRateLimitException(
-                "Serviço temporariamente sobrecarregado. Aguarde alguns segundos e tente novamente."
+                "Serviço temporariamente indisponível após múltiplas tentativas. Tente novamente em instantes."
         );
     }
 

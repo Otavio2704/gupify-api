@@ -34,6 +34,22 @@ public class GenerateService {
         checkSessionRateLimit(sessionId);
 
         if (request.jobDescriptionId() != null) {
+            // Só tenta cache se também tiver o conteúdo inline, pois o fluxo
+            // de JobDescription persistido ainda não está implementado.
+            // Quando estiver, remover essa guarda e buscar o texto pelo jobDescriptionId.
+            if (request.jobContent() == null || request.jobContent().isBlank()) {
+                log.warn(
+                    "jobDescriptionId={} informado sem jobContent. " +
+                    "O fluxo de vaga persistida ainda não está implementado. " +
+                    "Informe jobContent para continuar.",
+                    request.jobDescriptionId()
+                );
+                throw new IllegalArgumentException(
+                    "O fluxo por jobDescriptionId ainda não está disponível. " +
+                    "Informe o conteúdo da vaga no campo jobContent."
+                );
+            }
+
             Optional<Report> cached = reportRepository
                     .findByCvIdAndJobDescriptionIdAndSessionId(
                             request.cvId(), request.jobDescriptionId(), sessionId
@@ -69,7 +85,9 @@ public class GenerateService {
         String jobText = report.getJobDescriptionContent();
 
         if (jobText == null || jobText.isBlank()) {
-            throw new IllegalArgumentException("Conteúdo da vaga ausente no relatório. Não é possível regenerar.");
+            throw new IllegalArgumentException(
+                "Conteúdo da vaga ausente no relatório. Não é possível regenerar."
+            );
         }
 
         log.debug("Regenerando relatório id={} para sessionId={}", reportId, sessionId);
@@ -102,11 +120,6 @@ public class GenerateService {
         }
     }
 
-    /**
-     * Resolve o texto da vaga a partir do request.
-     * Prioriza jobContent inline. Se ausente, lança exceção —
-     * o fluxo de jobDescriptionId persistido ainda não está implementado.
-     */
     private String resolveJobText(GenerateRequest request) {
         if (request.jobContent() != null && !request.jobContent().isBlank()) {
             String title = (request.jobTitle() != null && !request.jobTitle().isBlank())
@@ -114,9 +127,10 @@ public class GenerateService {
                     : "";
             return title + request.jobContent();
         }
-        // jobDescriptionId presente mas sem jobContent: módulo JobDescription não implementado ainda
+        // Nunca deve chegar aqui: o GenerateRequest valida no compact constructor
+        // e o bloco do jobDescriptionId acima já lança antes de chegar neste ponto.
         throw new IllegalArgumentException(
-                "Texto da vaga não informado. O fluxo por jobDescriptionId ainda não está disponível."
+            "Texto da vaga não informado."
         );
     }
 

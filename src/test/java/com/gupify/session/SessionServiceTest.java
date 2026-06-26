@@ -80,4 +80,24 @@ class SessionServiceTest {
         assertThat(cookie.isHttpOnly()).isTrue();
         assertThat(cookie.isSecure()).isTrue();
     }
+
+    @Test
+    void updateLastSeenAt_whenSessionExists_shouldReturnOne() {
+        UUID id = UUID.randomUUID();
+        when(sessionRepository.updateLastSeenAt(eq(id), any(LocalDateTime.class))).thenReturn(1);
+
+        int affected = sessionRepository.updateLastSeenAt(id, LocalDateTime.now());
+
+        assertThat(affected).isEqualTo(1);
+    }
+
+    @Test
+    void updateLastSeenAt_whenSessionNotExists_shouldReturnZero() {
+        UUID id = UUID.randomUUID();
+        when(sessionRepository.updateLastSeenAt(eq(id), any(LocalDateTime.class))).thenReturn(0);
+
+        int affected = sessionRepository.updateLastSeenAt(id, LocalDateTime.now());
+
+        assertThat(affected).isEqualTo(0);
+    }
 }
