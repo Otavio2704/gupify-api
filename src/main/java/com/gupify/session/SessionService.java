@@ -53,8 +53,8 @@ public class SessionService {
     public ResponseCookie buildCookie(UUID sessionId) {
         return ResponseCookie.from(COOKIE_NAME, sessionId.toString())
                 .httpOnly(true)
-                .secure(true)
-                .sameSite("Strict")
+                .secure(false) // Alterado para false para permitir rodar em localhost (HTTP)
+                .sameSite("Lax") // Alterado para Lax para permitir envio de cookies via HTTP
                 .maxAge(Duration.ofDays(cookieMaxAgeDays))
                 .path("/")
                 .build();
@@ -63,8 +63,8 @@ public class SessionService {
     public ResponseCookie buildExpiredCookie() {
         return ResponseCookie.from(COOKIE_NAME, "")
                 .httpOnly(true)
-                .secure(true)
-                .sameSite("Strict")
+                .secure(false) // Alterado para false
+                .sameSite("Lax") // Alterado para Lax
                 .maxAge(Duration.ZERO)
                 .path("/")
                 .build();

@@ -34,7 +34,7 @@ public class SecurityConfig {
                         session.sessionCreationPolicy(SessionCreationPolicy.STATELESS)
                 )
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/api/session", "/actuator/health").permitAll()
+                        .requestMatchers("/api/session", "/actuator/health", "/api/session/**").permitAll()
                         .anyRequest().authenticated()
                 )
                 .addFilterBefore(
@@ -48,10 +48,17 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
-        config.setAllowedOrigins(List.of(allowedOrigin));
+        
+        // Permite o Vite e outras origens configuradas
+        config.setAllowedOrigins(List.of("http://localhost:5173", "http://localhost:3000", allowedOrigin));
+        
+        // Permite os métodos
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
-        config.setAllowedHeaders(List.of("*"));
+        
+        // Libera todos os headers e o envio de cookies de volta (crucial para o erro 403)
+        config.setAllowedHeaders(List.of("Authorization", "Cache-Control", "Content-Type"));
         config.setAllowCredentials(true);
+        config.setExposedHeaders(List.of("Set-Cookie"));
 
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         source.registerCorsConfiguration("/**", config);
