@@ -41,7 +41,11 @@ public class SecurityConfig {
                         session.sessionCreationPolicy(SessionCreationPolicy.STATELESS)
                 )
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/api/session", "/api/session/**", "/actuator/health").permitAll()
+                        .requestMatchers("/api/session", "/api/session/**").permitAll()
+                        // FIX #2 — Apenas /actuator/health público.
+                        // /actuator/metrics e /actuator/prometheus bloqueados.
+                        .requestMatchers("/actuator/health").permitAll()
+                        .requestMatchers("/actuator/**").denyAll()
                         .anyRequest().authenticated()
                 )
                 .addFilterBefore(sessionCookieFilter, UsernamePasswordAuthenticationFilter.class);

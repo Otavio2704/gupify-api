@@ -35,8 +35,9 @@ services:
       SERVER_PORT: 8080
       SESSION_COOKIE_MAX_AGE_DAYS: 90
       SESSION_EXPIRY_DAYS: 180
-      # Ativa o perfil dev para que application-dev.properties
-      # sobrescreva ddl-auto=validate com ddl-auto=update
+      # FIX #3 — Perfil dev ativado APENAS no docker-compose local.
+      # No Render, NÃO defina SPRING_PROFILES_ACTIVE nas variáveis de ambiente.
+      # Sem esse perfil: ddl-auto=validate e session.cookie.secure=true (produção segura).
       SPRING_PROFILES_ACTIVE: dev
     ports:
       - "8080:8080"

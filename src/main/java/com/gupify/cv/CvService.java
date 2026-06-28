@@ -15,6 +15,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.Paths;
 import java.util.List;
 import java.util.UUID;
 
@@ -31,6 +32,9 @@ public class CvService {
 
     private static final long MAX_FILE_SIZE = 5L * 1024 * 1024; // 5MB
 
+    // FIX #4 — Limite de CVs por sessão para evitar abuso de armazenamento
+    private static final int MAX_CVS_PER_SESSION = 10;
+
     private static final List<String> INJECTION_PATTERNS = List.of(
             "ignore previous", "disregard all", "you are now", "act as",
             "ignore all instructions", "forget everything", "new instructions"
@@ -46,13 +50,23 @@ public class CvService {
     public CvResponseDto upload(MultipartFile file, UUID sessionId) throws IOException {
         validateFileSize(file);
 
+        // FIX #4 — Verifica limite de CVs por sessão antes de processar o arquivo
+        long currentCount = cvRepository.countBySessionId(sessionId);
+        if (currentCount >= MAX_CVS_PER_SESSION) {
+            throw new IllegalArgumentException(
+                "Limite de " + MAX_CVS_PER_SESSION + " currículos por sessão atingido. " +
+                "Remova um CV existente antes de enviar um novo."
+            );
+        }
+
         String detectedType = detectMimeType(file);
         String rawText = extractText(file, detectedType);
         rawText = sanitizeText(rawText);
 
         Cv cv = new Cv();
         cv.setSessionId(sessionId);
-        cv.setFileName(file.getOriginalFilename());
+        // FIX #6 — fileName sanitizado para evitar path traversal e XSS via nome de arquivo
+        cv.setFileName(sanitizeFileName(file.getOriginalFilename()));
         cv.setFileType(detectedType);
         cv.setRawText(rawText);
 
@@ -102,6 +116,22 @@ public class CvService {
         if (file.getSize() > MAX_FILE_SIZE) {
             throw new IllegalArgumentException("Arquivo excede o tamanho máximo de 5MB");
         }
+    }
+
+    /**
+     * FIX #6 — Sanitiza o nome do arquivo antes de persistir.
+     * Remove path traversal (../) e caracteres especiais que poderiam
+     * causar XSS se o frontend renderizar o nome sem escape.
+     */
+    private String sanitizeFileName(String originalName) {
+        if (originalName == null || originalName.isBlank()) {
+            return "curriculo";
+        }
+        // Extrai apenas o nome do arquivo, descartando qualquer caminho (ex: ../../etc/passwd)
+        String name = Paths.get(originalName).getFileName().toString();
+        // Mantém apenas caracteres seguros
+        name = name.replaceAll("[^a-zA-Z0-9._\\- ]", "_");
+        return name.length() > 255 ? name.substring(0, 255) : name;
     }
 
     /**

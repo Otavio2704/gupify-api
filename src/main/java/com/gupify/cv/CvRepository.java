@@ -24,4 +24,7 @@ public interface CvRepository extends JpaRepository<Cv, UUID> {
      * Finds a specific CV by its ID, only if it belongs to the given session.
      */
     Optional<Cv> findByIdAndSessionId(UUID id, UUID sessionId);
+
+    // FIX #4 — Necessário para checar o limite de CVs por sessão antes do upload.
+    long countBySessionId(UUID sessionId);
 }

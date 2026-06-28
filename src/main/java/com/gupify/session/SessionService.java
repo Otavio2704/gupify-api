@@ -28,6 +28,12 @@ public class SessionService {
     @Value("${session.expiry-days:180}")
     private int sessionExpiryDays;
 
+    // FIX #1 — Cookie secure controlado por variável de ambiente.
+    // Em produção (Render/HTTPS) o default é true.
+    // Em dev, o application-dev.properties seta como false.
+    @Value("${session.cookie.secure:true}")
+    private boolean cookieSecure;
+
     @Transactional
     public Optional<Session> findAndRefresh(UUID sessionId) {
         return sessionRepository.findById(sessionId).map(session -> {
@@ -53,8 +59,8 @@ public class SessionService {
     public ResponseCookie buildCookie(UUID sessionId) {
         return ResponseCookie.from(COOKIE_NAME, sessionId.toString())
                 .httpOnly(true)
-                .secure(false) // Alterado para false para permitir rodar em localhost (HTTP)
-                .sameSite("Lax") // Alterado para Lax para permitir envio de cookies via HTTP
+                .secure(cookieSecure)
+                .sameSite(cookieSecure ? "Strict" : "Lax")
                 .maxAge(Duration.ofDays(cookieMaxAgeDays))
                 .path("/")
                 .build();
@@ -63,8 +69,8 @@ public class SessionService {
     public ResponseCookie buildExpiredCookie() {
         return ResponseCookie.from(COOKIE_NAME, "")
                 .httpOnly(true)
-                .secure(false) // Alterado para false
-                .sameSite("Lax") // Alterado para Lax
+                .secure(cookieSecure)
+                .sameSite(cookieSecure ? "Strict" : "Lax")
                 .maxAge(Duration.ZERO)
                 .path("/")
                 .build();

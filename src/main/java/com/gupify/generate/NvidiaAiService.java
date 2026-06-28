@@ -155,10 +155,6 @@ public class NvidiaAiService {
                                 .param("cv", cv)
                                 .param("job", job)
                         )
-                        .options(OpenAiChatOptions.builder()
-                                .withAdditionalRawParameter("chat_template_kwargs",
-                                        Map.of("enable_thinking", false))
-                                .build())
                         .call()
                         .entity(AiResult.class);
 
