@@ -1,6 +1,5 @@
 package com.gupify.session;
 
-import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -17,16 +16,24 @@ import java.util.List;
 
 @Configuration
 @EnableWebSecurity
-@RequiredArgsConstructor
+// SEM @RequiredArgsConstructor — a injeção é feita via parâmetros dos métodos @Bean
+// para evitar a referência circular entre SecurityConfig e SessionCookieFilter
 public class SecurityConfig {
 
-    private final SessionRepository sessionRepository;
-
-    @Value("${cors.allowed-origin}")
+    @Value("${cors.allowed-origin:http://localhost:5173}")
     private String allowedOrigin;
 
+    // SessionRepository injetado aqui via parâmetro, não via construtor da classe.
+    // Isso quebra o ciclo: SecurityConfig não depende de SessionCookieFilter no construtor.
     @Bean
-    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+    public SessionCookieFilter sessionCookieFilter(SessionRepository sessionRepository) {
+        return new SessionCookieFilter(sessionRepository);
+    }
+
+    // SessionCookieFilter injetado via parâmetro do método, não via campo da classe.
+    @Bean
+    public SecurityFilterChain securityFilterChain(HttpSecurity http,
+                                                   SessionCookieFilter sessionCookieFilter) throws Exception {
         http
                 .csrf(csrf -> csrf.disable())
                 .cors(cors -> cors.configurationSource(corsConfigurationSource()))
@@ -34,13 +41,10 @@ public class SecurityConfig {
                         session.sessionCreationPolicy(SessionCreationPolicy.STATELESS)
                 )
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/api/session", "/actuator/health", "/api/session/**").permitAll()
+                        .requestMatchers("/api/session", "/api/session/**", "/actuator/health").permitAll()
                         .anyRequest().authenticated()
                 )
-                .addFilterBefore(
-                        new SessionCookieFilter(sessionRepository),
-                        UsernamePasswordAuthenticationFilter.class
-                );
+                .addFilterBefore(sessionCookieFilter, UsernamePasswordAuthenticationFilter.class);
 
         return http.build();
     }
@@ -48,14 +52,12 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
-        
-        // Permite o Vite e outras origens configuradas
-        config.setAllowedOrigins(List.of("http://localhost:5173", "http://localhost:3000", allowedOrigin));
-        
-        // Permite os métodos
+        config.setAllowedOrigins(List.of(
+                "http://localhost:5173",
+                "http://localhost:3000",
+                allowedOrigin
+        ));
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
-        
-        // Libera todos os headers e o envio de cookies de volta (crucial para o erro 403)
         config.setAllowedHeaders(List.of("Authorization", "Cache-Control", "Content-Type"));
         config.setAllowCredentials(true);
         config.setExposedHeaders(List.of("Set-Cookie"));

@@ -10,13 +10,13 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
 import java.time.LocalDateTime;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -27,39 +27,41 @@ public class SessionCookieFilter extends OncePerRequestFilter {
     private final SessionRepository sessionRepository;
 
     @Override
-    @Transactional
+    // SEM @Transactional aqui — filtros não são gerenciados pelo contexto Spring
+    // quando instanciados fora do ciclo de vida normal do container.
+    // A transação do updateLastSeenAt é gerenciada pelo próprio @Transactional
+    // declarado no SessionRepository, que é um bean Spring gerenciado corretamente.
     protected void doFilterInternal(HttpServletRequest request,
                                     HttpServletResponse response,
                                     FilterChain filterChain)
             throws ServletException, IOException {
 
-        Optional<UUID> sessionIdOpt = extractSessionId(request);
+        extractSessionId(request).ifPresent(sessionId -> {
+            try {
+                int updated = sessionRepository.updateLastSeenAt(sessionId, LocalDateTime.now());
 
-        if (sessionIdOpt.isPresent()) {
-            UUID sessionId = sessionIdOpt.get();
-
-            // Atualiza last_seen_at e verifica existência em uma única query.
-            // Se retornar 0 linhas afetadas, a sessão não existe no banco.
-            int updated = sessionRepository.updateLastSeenAt(sessionId, LocalDateTime.now());
-
-            if (updated > 0) {
-                var auth = new UsernamePasswordAuthenticationToken(
-                        sessionId,
-                        null,
-                        List.of(new SimpleGrantedAuthority("ROLE_SESSION"))
-                );
-                SecurityContextHolder.getContext().setAuthentication(auth);
-                log.debug("Sessão autenticada via cookie: {}", sessionId);
-            } else {
-                log.debug("Cookie presente mas sessão não encontrada no banco: {}", sessionId);
+                if (updated > 0) {
+                    var auth = new UsernamePasswordAuthenticationToken(
+                            sessionId,
+                            null,
+                            List.of(new SimpleGrantedAuthority("ROLE_SESSION"))
+                    );
+                    SecurityContextHolder.getContext().setAuthentication(auth);
+                    log.debug("Sessão autenticada via cookie: {}", sessionId);
+                } else {
+                    log.debug("Cookie presente mas sessão não encontrada no banco: {}", sessionId);
+                }
+            } catch (Exception e) {
+                log.warn("Erro ao validar sessão no filtro: {}", e.getMessage());
             }
-        }
+        });
 
         filterChain.doFilter(request, response);
     }
 
     private Optional<UUID> extractSessionId(HttpServletRequest request) {
         if (request.getCookies() == null) return Optional.empty();
+
         return Arrays.stream(request.getCookies())
                 .filter(c -> SessionService.COOKIE_NAME.equals(c.getName()))
                 .map(Cookie::getValue)
@@ -71,7 +73,7 @@ public class SessionCookieFilter extends OncePerRequestFilter {
                         return null;
                     }
                 })
-                .filter(java.util.Objects::nonNull)
+                .filter(Objects::nonNull)
                 .findFirst();
     }
 }
