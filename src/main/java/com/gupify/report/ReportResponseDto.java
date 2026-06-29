@@ -9,6 +9,7 @@ public record ReportResponseDto(
         UUID cvId,
         UUID jobDescriptionId,
         String jobDescriptionTitle,
+        String jobDescriptionContent,
         String summary,
         Integer summaryVersion,
         List<String> keywords,
@@ -21,6 +22,7 @@ public record ReportResponseDto(
                 report.getCvId(),
                 report.getJobDescriptionId(),
                 report.getJobDescriptionTitle(),
+                report.getJobDescriptionContent(), // FIX: incluído no mapeamento
                 report.getSummary(),
                 report.getSummaryVersion(),
                 report.getKeywords(),
