@@ -28,8 +28,6 @@ public class SessionController {
      * Se o cookie já for válido, apenas atualiza last_seen_at.
      * Se inválido/ausente, cria nova sessão e devolve cookie.
      *
-     * FIX #5 — Rate limit de 5 criações por minuto para evitar session flooding.
-     * Sessões já existentes confirmadas via cookie passam direto sem consumir o limite.
      */
     @PostMapping
     @RateLimiter(name = "session-create", fallbackMethod = "sessionCreateRateLimitFallback")
@@ -54,10 +52,19 @@ public class SessionController {
 
     /**
      * GET /api/session — valida se a sessão do cookie é válida.
-     * Retorna 200 se válida, 401 se inválida (tratado pelo filtro).
+     * Retorna 200 se o SessionCookieFilter autenticou a sessão, 401 caso contrário.
      */
     @GetMapping
-    public ResponseEntity<Map<String, String>> validateSession() {
+    public ResponseEntity<Map<String, String>> validateSession(HttpServletRequest request) {
+        boolean authenticated = extractSessionId(request)
+                .flatMap(sessionService::findAndRefresh)
+                .isPresent();
+
+        if (!authenticated) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                    .body(Map.of("status", "invalid"));
+        }
+
         return ResponseEntity.ok(Map.of("status", "valid"));
     }
 

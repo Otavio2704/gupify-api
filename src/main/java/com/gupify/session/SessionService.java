@@ -28,9 +28,6 @@ public class SessionService {
     @Value("${session.expiry-days:180}")
     private int sessionExpiryDays;
 
-    // FIX #1 — Cookie secure controlado por variável de ambiente.
-    // Em produção (Render/HTTPS) o default é true.
-    // Em dev, o application-dev.properties seta como false.
     @Value("${session.cookie.secure:true}")
     private boolean cookieSecure;
 
@@ -45,6 +42,7 @@ public class SessionService {
     @Transactional
     public Session createSession() {
         Session session = new Session(UUID.randomUUID());
+        session.setExpiresAt(LocalDateTime.now().plusDays(sessionExpiryDays));
         Session saved = sessionRepository.save(session);
         log.info("Nova sessão criada: {}", saved.getId());
         return saved;
