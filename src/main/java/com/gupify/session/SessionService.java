@@ -58,7 +58,7 @@ public class SessionService {
         return ResponseCookie.from(COOKIE_NAME, sessionId.toString())
                 .httpOnly(true)
                 .secure(cookieSecure)
-                .sameSite(cookieSecure ? "Strict" : "Lax")
+                .sameSite(sameSitePolicy())
                 .maxAge(Duration.ofDays(cookieMaxAgeDays))
                 .path("/")
                 .build();
@@ -68,10 +68,14 @@ public class SessionService {
         return ResponseCookie.from(COOKIE_NAME, "")
                 .httpOnly(true)
                 .secure(cookieSecure)
-                .sameSite(cookieSecure ? "Strict" : "Lax")
+                .sameSite(sameSitePolicy())
                 .maxAge(Duration.ZERO)
                 .path("/")
                 .build();
+    }
+
+    private String sameSitePolicy() {
+        return cookieSecure ? "None" : "Lax";
     }
 
     @Scheduled(cron = "0 0 3 * * *")
