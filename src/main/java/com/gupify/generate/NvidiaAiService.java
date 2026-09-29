@@ -182,20 +182,16 @@ public class NvidiaAiService {
         String cv = truncate(cvText, cvMaxChars);
         String job = truncate(jobText, jobMaxChars);
 
-        log.info("Chamada à NVIDIA NIM iniciada. model={}, cvChars={}, jobChars={}",
+        log.info("Chamada à NVIDIA NIM iniciada (via cliente de streaming). model={}, cvChars={}, jobChars={}",
                 modeloAtivo, cv.length(), job.length());
         long inicioMs = System.currentTimeMillis();
 
         AiResult resultado = requestTimer.record(() -> {
             try {
-                AiResult result = chatClient.prompt()
-                        .user(u -> u
-                                .text(USER_PROMPT)
-                                .param("cv", cv)
-                                .param("job", job)
-                        )
-                        .call()
-                        .entity(AiResult.class);
+                String bruto = gerarBrutoPorStream(cv, job);
+                AiResult result = new AiResult(
+                        PartialSummaryParser.extractSummary(bruto),
+                        PartialSummaryParser.extractKeywords(bruto));
 
                 validateResult(result);
                 successCounter.increment();
@@ -216,6 +212,43 @@ public class NvidiaAiService {
         log.info("NVIDIA NIM respondeu em {} ms. model={}", System.currentTimeMillis() - inicioMs, modeloAtivo);
 
         return resultado;
+    }
+
+    // =========================================================================
+    // GERAÇÃO NÃO-STREAMING — usa o MESMO cliente do streaming por dentro.
+    //
+    // Antes esta rota usava o ChatClient do Spring AI, com o mesmo defeito que
+    // derrubou a produção: o campo reasoning_effort é ignorado pela NIM nos
+    // DeepSeek V4, o modelo pensa, o raciocínio vai para reasoning_content (que
+    // a M6 não lê) e a resposta nunca chega — 186 s e HTTP 503 no teste de
+    // 01:31Z. Agora ela consome o cliente SSE (chat_template_kwargs + troca
+    // automática de modelo) e junta os pedaços, então o "plano B" do front tem
+    // a mesma garantia de que o texto sai.
+    // =========================================================================
+
+    /** Executa a geração pelo cliente SSE e devolve o JSON bruto completo. */
+    private String gerarBrutoPorStream(String cv, String job) {
+        String userPrompt = USER_PROMPT
+                .replace("{cv}", cv)
+                .replace("{job}", job);
+
+        StringBuilder bruto = new StringBuilder();
+        // Margem para a troca de modelo acontecer antes de desistir.
+        long limiteSegundos = streamTimeoutSeconds + reservaAposSegundos + 30;
+
+        try {
+            nimClient.stream(modeloAtivo, SYSTEM_PROMPT, userPrompt)
+                    .doOnNext(evento -> {
+                        if (evento.tipo() == NvidiaNimSseClient.Tipo.CONTEUDO) {
+                            bruto.append(evento.texto());
+                        }
+                    })
+                    .blockLast(Duration.ofSeconds(limiteSegundos));
+        } catch (Exception e) {
+            throw new IllegalStateException("Falha ao gerar pela NVIDIA NIM: " + e.getMessage(), e);
+        }
+
+        return bruto.toString();
     }
 
     // =========================================================================
