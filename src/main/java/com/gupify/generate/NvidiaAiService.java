@@ -11,6 +11,11 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import reactor.core.publisher.Flux;
+
+import java.time.Duration;
+import java.util.List;
+import java.util.function.Supplier;
 
 @Slf4j
 @Service
@@ -117,6 +122,18 @@ public class NvidiaAiService {
     @Value("${nvidia.api.job-max-chars}")
     private int jobMaxChars;
 
+    // FIX DE LATÊNCIA — teto de tempo específico do streaming. O read timeout do
+    // HttpClientConfig vale para as chamadas não-streaming; num stream a conexão
+    // fica aberta recebendo dados, então quem controla o tempo é o operador
+    // .timeout() do Reactor abaixo.
+    @Value("${nvidia.api.stream-timeout-seconds:120}")
+    private long streamTimeoutSeconds;
+
+    // FIX DE DIAGNÓSTICO — imprime no log QUAL modelo está realmente em uso.
+    // Sem isso não dá para saber, olhando o Render, se o deploy aplicou a troca de modelo.
+    @Value("${spring.ai.openai.chat.options.model:desconhecido}")
+    private String modeloAtivo;
+
     public NvidiaAiService(ChatClient.Builder builder, MeterRegistry meterRegistry) {
         this.chatClient = builder
                 .defaultSystem(SYSTEM_PROMPT)
@@ -145,9 +162,11 @@ public class NvidiaAiService {
         String cv = truncate(cvText, cvMaxChars);
         String job = truncate(jobText, jobMaxChars);
 
-        log.debug("Iniciando chamada à NVIDIA NIM. cvChars={}, jobChars={}", cv.length(), job.length());
+        log.info("Chamada à NVIDIA NIM iniciada. model={}, cvChars={}, jobChars={}",
+                modeloAtivo, cv.length(), job.length());
+        long inicioMs = System.currentTimeMillis();
 
-        return requestTimer.record(() -> {
+        AiResult resultado = requestTimer.record(() -> {
             try {
                 AiResult result = chatClient.prompt()
                         .user(u -> u
@@ -170,6 +189,117 @@ public class NvidiaAiService {
                 throw e;
             }
         });
+
+        // FIX DE DIAGNÓSTICO — este número é a resposta para "por que demora?".
+        // Antes existia só um Timer do Micrometer, que nem é exposto em produção
+        // (/actuator/metrics está bloqueado no SecurityConfig).
+        log.info("NVIDIA NIM respondeu em {} ms. model={}", System.currentTimeMillis() - inicioMs, modeloAtivo);
+
+        return resultado;
+    }
+
+    // =========================================================================
+    // STREAMING — mesmo prompt e mesmas validações, mas entregando o resumo
+    // enquanto o modelo escreve. É o que elimina a sensação de "resposta que
+    // nunca aparece": o primeiro texto chega em ~1-2s em vez de só no fim.
+    // =========================================================================
+
+    /**
+     * Resultado do streaming: o fluxo de pedaços de texto para enviar ao cliente
+     * e o buffer com o JSON bruto completo (usado para montar o relatório no fim).
+     *
+     * @param deltas    pedaços incrementais do campo "summary" (já decodificados)
+     * @param rawBuffer JSON bruto acumulado, preenchido conforme o stream avança
+     */
+    public record AiStreamResult(Flux<String> deltas, StringBuilder rawBuffer) {
+    }
+
+    @RateLimiter(name = "nvidia", fallbackMethod = "streamRateLimitFallback")
+    public AiStreamResult streamSummary(String cvText, String jobText) {
+        String cv = truncate(cvText, cvMaxChars);
+        String job = truncate(jobText, jobMaxChars);
+
+        log.info("Streaming NVIDIA iniciado. model={}, cvChars={}, jobChars={}, timeout={}s",
+                modeloAtivo, cv.length(), job.length(), streamTimeoutSeconds);
+
+        long inicioMs = System.currentTimeMillis();
+        StringBuilder bruto = new StringBuilder();
+        StringBuilder jaEnviado = new StringBuilder();
+
+        Flux<String> deltas = chatClient.prompt()
+                .user(u -> u
+                        .text(USER_PROMPT)
+                        .param("cv", cv)
+                        .param("job", job))
+                .stream()
+                .content()
+                .timeout(Duration.ofSeconds(streamTimeoutSeconds))
+                // handle() em vez de map(): descarta os pedaços em que o "summary"
+                // ainda não alcançou um ponto seguro de corte (ex.: escape uXXXX
+                // partido ao meio entre dois chunks).
+                .handle((String chunk, reactor.core.publisher.SynchronousSink<String> sink) -> {
+                    bruto.append(chunk);
+                    String summary = PartialSummaryParser.extractSummary(bruto.toString());
+                    String jaMostrado = jaEnviado.toString();
+                    if (summary.length() > jaMostrado.length() && summary.startsWith(jaMostrado)) {
+                        sink.next(summary.substring(jaMostrado.length()));
+                        jaEnviado.setLength(0);
+                        jaEnviado.append(summary);
+                    }
+                })
+                .doOnComplete(() -> {
+                    log.info("Streaming NVIDIA concluído em {} ms. rawChars={}, summaryChars={}",
+                            System.currentTimeMillis() - inicioMs, bruto.length(), jaEnviado.length());
+                })
+                .doOnError(e -> log.warn("Streaming NVIDIA interrompido após {} ms: {}",
+                        System.currentTimeMillis() - inicioMs, e.getMessage()));
+
+        return new AiStreamResult(deltas, bruto);
+    }
+
+    // Fallback do streaming quando o rate limiter bloqueia (mesmo comportamento
+    // do fluxo não-streaming: exceção tratada pelo GlobalExceptionHandler).
+    private AiStreamResult streamRateLimitFallback(String cvText, String jobText, Exception ex) {
+        rateLimitCounter.increment();
+        log.warn("Rate limit interno (Resilience4j) no streaming: {}", ex.getMessage());
+        throw new NvidiaRateLimitException(
+                "Serviço temporariamente sobrecarregado. Aguarde alguns segundos e tente novamente."
+        );
+    }
+
+    /** Usado pelo auto-teste do parser no boot da aplicação. */
+    public static boolean parserSanidadeOk() {
+        return parserSanidadeFalha() == null;
+    }
+
+    /** Devolve a descrição da falha, ou null se o parser estiver correto. */
+    public static String parserSanidadeFalha() {
+        List<Supplier<Boolean>> casos = List.of(
+                () -> "Olá mundo".equals(PartialSummaryParser.extractSummary(
+                        "{\"summary\": \"Olá mundo\", \"keywords\": [\"a\",\"b\",\"c\"]}")),
+                () -> "linha1\nlinha2".equals(PartialSummaryParser.extractSummary(
+                        "{\"summary\": \"linha1\\nlinha2\"}")),
+                () -> "com \"aspas\"".equals(PartialSummaryParser.extractSummary(
+                        "{\"summary\": \"com \\\"aspas\\\"\"}")),
+                () -> "acentuado: ção".equals(PartialSummaryParser.extractSummary(
+                        "{\"summary\": \"acentuado: \\u00e7\\u00e3o\"}")),
+                () -> "cortado".equals(PartialSummaryParser.extractSummary(
+                        "{\"summary\": \"cortado\\u00")),
+                () -> "".equals(PartialSummaryParser.extractSummary("{\"summ")),
+                () -> List.of("SQL", "Power BI", "Excel").equals(PartialSummaryParser.extractKeywords(
+                        "{\"summary\": \"x\", \"keywords\": [\"SQL\", \"Power BI\", \"Excel\"]}"))
+        );
+
+        for (int i = 0; i < casos.size(); i++) {
+            try {
+                if (!casos.get(i).get()) {
+                    return "caso " + (i + 1) + " falhou";
+                }
+            } catch (Exception e) {
+                return "caso " + (i + 1) + " lançou " + e.getClass().getSimpleName();
+            }
+        }
+        return null;
     }
 
     // Fallback acionado quando o rate limiter do Resilience4j bloqueia a chamada

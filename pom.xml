@@ -64,6 +64,16 @@
             <artifactId>spring-ai-openai-spring-boot-starter</artifactId>
         </dependency>
 
+        <!-- FIX LATÊNCIA (streaming) — o ChatClient.stream() do Spring AI usa o
+             WebClient por baixo. Sem spring-webflux no classpath não existe
+             WebClient.Builder para o auto-config injetar e o streaming falha.
+             A aplicação continua rodando em Tomcat (servlet): o webflux entra
+             apenas pelo cliente HTTP reativo, não para trocar o servidor. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webflux</artifactId>
+        </dependency>
+
         <!-- PostgreSQL -->
         <dependency>
             <groupId>org.postgresql</groupId>

@@ -27,6 +27,51 @@ public class GenerateService {
     @Value("${gupify.rate-limit.generations-per-hour:10}")
     private int generationsPerHour;
 
+    // =========================================================================
+    // STREAMING — usado pelo endpoint /api/generate/stream
+    //
+    // O fluxo antigo (generate()) mantém @Transactional em volta da chamada de IA,
+    // o que prende uma conexão de banco durante os minutos de geração. Aqui a
+    // lógica é dividida em duas transações curtas:
+    //
+    //   1) preparar()  → valida, aplica rate limit e resolve os textos (readOnly)
+    //   2) salvar()    → grava o resultado no fim do stream (transação curta)
+    //
+    // A chamada da IA acontece ENTRE as duas, sem transação aberta.
+    // =========================================================================
+
+    /** Textos já validados/prontos para enviar à IA. */
+    public record ContextoGeracao(String cvText, String jobText) {
+    }
+
+    @Transactional(readOnly = true)
+    public ContextoGeracao preparar(GenerateRequest request, UUID sessionId) {
+        String cvText = cvService.getRawText(request.cvId(), sessionId);
+        checkSessionRateLimit(sessionId);
+
+        if (request.jobDescriptionId() != null
+                && (request.jobContent() == null || request.jobContent().isBlank())) {
+            log.warn("jobDescriptionId={} informado sem jobContent no fluxo de streaming.",
+                    request.jobDescriptionId());
+            throw new IllegalArgumentException(
+                    "O fluxo por jobDescriptionId ainda não está disponível. "
+                            + "Informe o conteúdo da vaga no campo jobContent."
+            );
+        }
+
+        return new ContextoGeracao(cvText, resolveJobText(request));
+    }
+
+    /** Grava o resultado do streaming. Chamado no fim do stream, fora da IA. */
+    @Transactional
+    public GenerateResponseDto salvar(GenerateRequest request, UUID sessionId,
+                                      String summary, java.util.List<String> keywords) {
+        Report report = buildReport(request, sessionId, new AiResult(summary, keywords));
+        Report saved = reportRepository.save(report);
+        log.info("Relatório gerado por streaming e salvo. id={}, sessionId={}", saved.getId(), sessionId);
+        return toResponseDto(saved, false);
+    }
+
     @Transactional
     public GenerateResponseDto generate(GenerateRequest request, UUID sessionId) {
         String cvText = cvService.getRawText(request.cvId(), sessionId);
