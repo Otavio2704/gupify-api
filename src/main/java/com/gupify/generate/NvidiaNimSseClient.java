@@ -19,10 +19,12 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
@@ -193,10 +195,35 @@ public class NvidiaNimSseClient {
             long inicio = System.currentTimeMillis();
             boolean encerrouSemTexto = false;
 
+            // Limite para a RESPOSTA INICIAL (cabeçalhos HTTP). Existe um cenário em que
+            // a NIM aceita a conexão e fica muda (modelo pensando sem transmitir nada, ou
+            // fila do gateway): sem este limite, a thread de leitura ficaria bloqueada e
+            // nem a troca de modelo aconteceria — silêncio até o timeout de 120s.
+            long limiteRespostaInicial = (temReserva && reservaAposSegundos > 0)
+                    ? Math.max(3, reservaAposSegundos - 2)
+                    : TIMEOUT_REQUISICAO.toSeconds();
+
             try {
-                HttpResponse<Stream<String>> resposta = http.send(
+                log.info("NIM: pedindo stream ao modelo {} (thinking desligado={}, resposta inicial em até {}s)",
+                        modelo, desligarThinking, limiteRespostaInicial);
+
+                CompletableFuture<HttpResponse<Stream<String>>> futuro = http.sendAsync(
                         montarRequisicao(modelo, systemPrompt, userPrompt),
                         HttpResponse.BodyHandlers.ofLines());
+
+                HttpResponse<Stream<String>> resposta;
+                try {
+                    resposta = futuro.get(limiteRespostaInicial, TimeUnit.SECONDS);
+                } catch (TimeoutException e) {
+                    futuro.cancel(true);
+                    log.warn("NIM: modelo {} não enviou nem os cabeçalhos em {}s — trocando para o reserva {}",
+                            modelo, limiteRespostaInicial, proximo);
+                    if (temReserva) {
+                        continue;
+                    }
+                    sink.error(new NimException("A NIM não respondeu em " + limiteRespostaInicial + "s."));
+                    return;
+                }
 
                 if (resposta.statusCode() != 200) {
                     String corpo = resposta.body().limit(30).collect(Collectors.joining("\n"));
@@ -270,7 +297,9 @@ public class NvidiaNimSseClient {
             }
         }
 
-        sink.complete();
+        // Chegou aqui = nenhum modelo entregou texto. Melhor um erro claro do que um
+        // stream que termina em silêncio (a tela ficava "carregando" para sempre).
+        sink.error(new NimException("Nenhum modelo da NIM produziu texto."));
     }
 
     /** Lê um chunk JSON do SSE e emite o evento correspondente. */
