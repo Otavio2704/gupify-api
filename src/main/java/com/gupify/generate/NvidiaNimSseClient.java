@@ -103,6 +103,10 @@ public class NvidiaNimSseClient {
     private final ObjectMapper mapper = new ObjectMapper();
     private final HttpClient http = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(10))
+            // HTTP/1.1 fixo: o SSE sobre HTTP/2 do HttpClient do JDK é um risco
+            // desnecessário contra a NIM (stream que morre sem erro visível deixaria
+            // o app em silêncio até o timeout, exatamente o sintoma que perseguimos).
+            .version(HttpClient.Version.HTTP_1_1)
             .build();
     private final ScheduledExecutorService agendador = Executors.newSingleThreadScheduledExecutor(r -> {
         Thread t = new Thread(r, "nim-troca-modelo");
@@ -129,16 +133,25 @@ public class NvidiaNimSseClient {
     private String modeloReserva;
 
     /**
-     * Abre o stream da NIM para o modelo principal e, se preciso, para o reserva.
+     * Abre o stream da NIM para o modelo principal e, se preciso, para os reservas.
      * O fluxo resultante emite eventos até o fim da resposta (ou até um erro real).
+     *
+     * A reserva aceita uma LISTA separada por vírgula: se um modelo ficar mudo, o
+     * seguinte assume — assim uma fila cheia na NVIDIA não deixa o usuário sem resposta.
      */
     public Flux<Evento> stream(String modeloPrincipal, String systemPrompt, String userPrompt) {
         List<String> modelos = new ArrayList<>();
         modelos.add(modeloPrincipal);
-        if (modeloReserva != null && !modeloReserva.isBlank()
-                && !modeloReserva.trim().equals(modeloPrincipal)) {
-            modelos.add(modeloReserva.trim());
+        if (modeloReserva != null) {
+            for (String candidato : modeloReserva.split(",")) {
+                String limpo = candidato.trim();
+                if (!limpo.isEmpty() && !modelos.contains(limpo)) {
+                    modelos.add(limpo);
+                }
+            }
         }
+
+        log.info("NIM: cadeia de modelos para esta geração = {}", modelos);
 
         return Flux.create(sink -> {
             AtomicReference<Stream<String>> streamAtual = new AtomicReference<>();
