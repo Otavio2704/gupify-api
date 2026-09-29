@@ -15,6 +15,8 @@ import reactor.core.publisher.Flux;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 
 @Slf4j
@@ -111,6 +113,7 @@ public class NvidiaAiService {
             """;
 
     private final ChatClient chatClient;
+    private final NvidiaNimSseClient nimClient;
     private final Counter successCounter;
     private final Counter rateLimitCounter;
     private final Counter retryExhaustedCounter;
@@ -134,10 +137,27 @@ public class NvidiaAiService {
     @Value("${spring.ai.openai.chat.options.model:desconhecido}")
     private String modeloAtivo;
 
-    public NvidiaAiService(ChatClient.Builder builder, MeterRegistry meterRegistry) {
+    // FIX 29/09/2026 — o streaming deixou de usar o ChatClient do Spring AI e passou
+    // a usar o cliente SSE próprio (NvidiaNimSseClient). Motivo medido em produção:
+    // o M6 não lê o campo "reasoning_content" (ficava cego para o thinking e via
+    // silêncio enquanto a NIM transmitia) e não permite enviar "chat_template_kwargs",
+    // que é o canal que a NIM realmente respeita para desligar o raciocínio nos
+    // DeepSeek V4 (o "reasoning_effort" é ignorado na API hospedada da NVIDIA).
+    @Value("${nvidia.api.desligar-thinking:true}")
+    private boolean desligarThinking;
+
+    @Value("${nvidia.api.reserva-apos-segundos:15}")
+    private long reservaAposSegundos;
+
+    @Value("${nvidia.api.modelo-reserva:}")
+    private String modeloReserva;
+
+    public NvidiaAiService(ChatClient.Builder builder, NvidiaNimSseClient nimClient,
+                           MeterRegistry meterRegistry) {
         this.chatClient = builder
                 .defaultSystem(SYSTEM_PROMPT)
                 .build();
+        this.nimClient = nimClient;
 
         this.successCounter = Counter.builder("gupify.generate.success")
                 .description("Total de gerações bem-sucedidas")
@@ -219,21 +239,53 @@ public class NvidiaAiService {
         String cv = truncate(cvText, cvMaxChars);
         String job = truncate(jobText, jobMaxChars);
 
-        log.info("Streaming NVIDIA iniciado. model={}, cvChars={}, jobChars={}, timeout={}s",
-                modeloAtivo, cv.length(), job.length(), streamTimeoutSeconds);
+        // Mesmo prompt de sempre; a renderização é feita aqui porque o cliente SSE
+        // monta o corpo da requisição à mão (o ChatClient não entra neste caminho).
+        String userPrompt = USER_PROMPT
+                .replace("{cv}", cv)
+                .replace("{job}", job);
+
+        log.info("Streaming NVIDIA iniciado. model={}, reserva={}, desligarThinking={}, "
+                        + "cvChars={}, jobChars={}, timeout={}s",
+                modeloAtivo, modeloReserva, desligarThinking, cv.length(), job.length(),
+                streamTimeoutSeconds);
 
         long inicioMs = System.currentTimeMillis();
         StringBuilder bruto = new StringBuilder();
         StringBuilder jaEnviado = new StringBuilder();
+        AtomicLong charsRaciocinio = new AtomicLong();
+        AtomicBoolean raciocinioAvisado = new AtomicBoolean(false);
 
-        Flux<String> deltas = chatClient.prompt()
-                .user(u -> u
-                        .text(USER_PROMPT)
-                        .param("cv", cv)
-                        .param("job", job))
-                .stream()
-                .content()
+        Flux<NvidiaNimSseClient.Evento> eventos = nimClient
+                .stream(modeloAtivo, SYSTEM_PROMPT, userPrompt)
+                // O timeout agora mede SILÊNCIO REAL: qualquer evento, inclusive o
+                // raciocínio, conta como sinal de vida da NIM. Antes (Spring AI), o
+                // raciocínio era invisível e o timeout disparava com a NIM
+                // transmitindo normalmente — era a causa do erro em produção.
                 .timeout(Duration.ofSeconds(streamTimeoutSeconds))
+                .doOnNext(evento -> {
+                    if (evento.tipo() == NvidiaNimSseClient.Tipo.RACIOCINIO) {
+                        charsRaciocinio.addAndGet(evento.texto().length());
+                        if (raciocinioAvisado.compareAndSet(false, true)) {
+                            log.warn("Streaming NVIDIA: modelo {} está RACIOCINANDO (thinking ligado na NIM). "
+                                            + "O texto só chega depois; sem texto em {}s o reserva assume.",
+                                    modeloAtivo, reservaAposSegundos);
+                        }
+                    } else if (evento.tipo() == NvidiaNimSseClient.Tipo.USO) {
+                        log.info("Streaming NVIDIA: tokens de raciocínio={}, de conteúdo={}",
+                                evento.tokensRaciocinio(), evento.tokensConteudo());
+                    }
+                })
+                .doOnComplete(() -> log.info(
+                        "Streaming NVIDIA concluído em {} ms. rawChars={}, summaryChars={}, reasoningChars={}",
+                        System.currentTimeMillis() - inicioMs, bruto.length(), jaEnviado.length(),
+                        charsRaciocinio.get()))
+                .doOnError(e -> log.warn("Streaming NVIDIA interrompido após {} ms: {}",
+                        System.currentTimeMillis() - inicioMs, e.getMessage()));
+
+        Flux<String> deltas = eventos
+                .filter(evento -> evento.tipo() == NvidiaNimSseClient.Tipo.CONTEUDO)
+                .map(NvidiaNimSseClient.Evento::texto)
                 // handle() em vez de map(): descarta os pedaços em que o "summary"
                 // ainda não alcançou um ponto seguro de corte (ex.: escape uXXXX
                 // partido ao meio entre dois chunks).
@@ -246,13 +298,7 @@ public class NvidiaAiService {
                         jaEnviado.setLength(0);
                         jaEnviado.append(summary);
                     }
-                })
-                .doOnComplete(() -> {
-                    log.info("Streaming NVIDIA concluído em {} ms. rawChars={}, summaryChars={}",
-                            System.currentTimeMillis() - inicioMs, bruto.length(), jaEnviado.length());
-                })
-                .doOnError(e -> log.warn("Streaming NVIDIA interrompido após {} ms: {}",
-                        System.currentTimeMillis() - inicioMs, e.getMessage()));
+                });
 
         return new AiStreamResult(deltas, bruto);
     }
